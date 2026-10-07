@@ -1,0 +1,33 @@
+name: Android checks
+on:
+  push:
+    branches: ['**']
+  pull_request:
+jobs:
+  android:
+    name: Unit tests, lint, and APK
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/cirruslabs/android-sdk:36
+    steps:
+      - name: Checkout
+        uses: https://github.com/actions/checkout@v4
+      - name: Test, lint, and assemble
+        run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
+      - name: Verify unit test discovery
+        run: |
+          test -n "$(printf '%s\n' app/build/test-results/testDebugUnitTest/TEST-*.xml)"
+          test -f app/build/test-results/testDebugUnitTest/TEST-dev.quinntyx.charon.BootstrapTest.xml
+      - name: Upload debug APK
+        uses: https://github.com/actions/upload-artifact@v3
+        with:
+          name: charon-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Upload test and lint reports
+        if: always()
+        uses: https://github.com/actions/upload-artifact@v3
+        with:
+          name: validation-reports
+          path: |
+            app/build/reports/tests/
+            app/build/reports/lint-results-debug.html
