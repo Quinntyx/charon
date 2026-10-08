@@ -10,24 +10,17 @@ jobs:
     container:
       image: ghcr.io/cirruslabs/android-sdk:36
     steps:
-      - name: Checkout
-        uses: https://github.com/actions/checkout@v4
+      - name: Checkout exact commit without Node
+        run: |
+          git init .
+          git remote add origin '${{ github.server_url }}/${{ github.repository }}.git'
+          git fetch --depth 1 origin '${{ github.sha }}'
+          git checkout --detach FETCH_HEAD
       - name: Test, lint, and assemble
         run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
-      - name: Verify unit test discovery
+      - name: Verify test discovery and APK output
         run: |
-          test -n "$(printf '%s\n' app/build/test-results/testDebugUnitTest/TEST-*.xml)"
           test -f app/build/test-results/testDebugUnitTest/TEST-dev.quinntyx.charon.BootstrapTest.xml
-      - name: Upload debug APK
-        uses: https://github.com/actions/upload-artifact@v3
-        with:
-          name: charon-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
-      - name: Upload test and lint reports
-        if: always()
-        uses: https://github.com/actions/upload-artifact@v3
-        with:
-          name: validation-reports
-          path: |
-            app/build/reports/tests/
-            app/build/reports/lint-results-debug.html
+          test -f app/build/reports/lint-results-debug.html
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          printf 'Verified unit-test reports, lint report, and debug APK at this commit.\n'
