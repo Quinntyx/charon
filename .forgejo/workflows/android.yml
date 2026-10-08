@@ -9,6 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/cirruslabs/android-sdk:36
+      options: --volume charon-gradle-cache:/root/.gradle
     steps:
       - name: Checkout exact commit without Node
         run: |
