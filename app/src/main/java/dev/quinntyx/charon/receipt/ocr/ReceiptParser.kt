@@ -91,13 +91,12 @@ class ReceiptParser {
             val labelScore = totalLabels.firstNotNullOfOrNull { (label, score) ->
                 if (label.containsMatchIn(normalized)) score else null
             }
+            if (labelScore == null) return@forEachIndexed
+
             val hasCurrencyMarker = containsCurrencyMarker(line)
             extractNumberTokens(line).forEach { token ->
                 val parsed = parseMinorUnits(token, currency) ?: return@forEach
-                if (labelScore == null && !hasCurrencyMarker && !token.contains('.') && !token.contains(',')) {
-                    return@forEach
-                }
-                val score = (labelScore ?: 35) + if (hasCurrencyMarker) 5 else 0
+                val score = labelScore + if (hasCurrencyMarker) 5 else 0
                 candidates += Scored(ParsedMoney(parsed), score, line, index)
             }
         }
@@ -341,8 +340,12 @@ class ReceiptParser {
                 monthFirstFormatter("MMMM"),
             ),
             listOf(
-                DateTimeFormatterBuilder().parseCaseInsensitive().appendPattern("d MMM uuuu").toFormatter(Locale.ENGLISH),
-                DateTimeFormatterBuilder().parseCaseInsensitive().appendPattern("d MMMM uuuu").toFormatter(Locale.ENGLISH),
+                DateTimeFormatterBuilder().parseCaseInsensitive().appendPattern("d MMM uuuu")
+                    .toFormatter(Locale.ENGLISH)
+                    .withResolverStyle(java.time.format.ResolverStyle.STRICT),
+                DateTimeFormatterBuilder().parseCaseInsensitive().appendPattern("d MMMM uuuu")
+                    .toFormatter(Locale.ENGLISH)
+                    .withResolverStyle(java.time.format.ResolverStyle.STRICT),
             ),
         )
         fun monthFirstFormatter(monthPattern: String): DateTimeFormatter =
@@ -351,6 +354,7 @@ class ReceiptParser {
                 .optionalStart().appendLiteral(',').optionalEnd()
                 .appendLiteral(' ').appendPattern("uuuu")
                 .toFormatter(Locale.ENGLISH)
+                .withResolverStyle(java.time.format.ResolverStyle.STRICT)
         val dateRegexes = listOf(isoDateRegex, numericDateRegex) + namedDateRegexes
     }
 }

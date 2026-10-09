@@ -162,6 +162,40 @@ class ReceiptParserTest {
     }
 
     @Test
+    fun `currency-marked item prices are not promoted when total is missing`() {
+        val parsed = parser.parse(
+            """
+            RIVER MARKET
+            EUR
+            Date 2025-06-14
+            Bread €2.49
+            Milk €1.20
+            """.trimIndent(),
+        )
+
+        assertNull(parsed.total)
+        assertEquals(setOf(ReceiptParseIssue.MISSING_TOTAL), parsed.issues)
+        assertTrue(parsed.requiresReview)
+    }
+
+    @Test
+    fun `invalid named calendar dates are rejected instead of adjusted`() {
+        listOf("Date February 30, 2025", "Date 31 Apr 2025").forEach { invalidDate ->
+            val parsed = parser.parse(
+                """
+                CITY STORE
+                USD
+                $invalidDate
+                Total 12.00
+                """.trimIndent(),
+            )
+
+            assertNull(parsed.date)
+            assertTrue(parsed.issues.contains(ReceiptParseIssue.MISSING_DATE))
+        }
+    }
+
+    @Test
     fun `missing fields are explicit and subtotal alone is not promoted`() {
         val parsed = parser.parse(
             """
