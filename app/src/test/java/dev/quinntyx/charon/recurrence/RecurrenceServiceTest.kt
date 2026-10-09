@@ -32,7 +32,7 @@ class RecurrenceServiceTest {
         assertTrue(logs.all { it.occurrence.key.recurringPaymentId == automatic.id })
         assertTrue(logs.all { it.origin == LoggingOrigin.AUTOMATIC_CATCH_UP })
         val pending = service.pendingOccurrences(
-            LocalDate.parse("2025-04-01"),
+            LocalDate.parse("2025-03-01"),
             LocalDate.parse("2025-04-10"),
         )
         assertEquals(2, pending.size)
@@ -92,7 +92,7 @@ class RecurrenceServiceTest {
             dueDate = LocalDate.parse("2025-01-31"),
             loggedOn = LocalDate.parse("2025-01-31"),
         )
-        service.changeAmount(payment.id, 1_250, LocalDate.parse("2025-02-15"))
+        service.changeAmount(payment.id, 1_250, LocalDate.parse("2025-03-01"))
 
         val future = service.pendingOccurrences(
             LocalDate.parse("2025-02-01"),
