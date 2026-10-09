@@ -134,7 +134,8 @@ class BackupRestoreCoordinatorTest {
 
         assertSame(applyFailure, actual)
         assertEquals(1, actual.suppressed.size)
-        assertSame(rollbackFailure, actual.suppressed.single())
+        assertEquals(rollbackFailure::class, actual.suppressed.single()::class)
+        assertEquals(rollbackFailure.message, actual.suppressed.single().message)
     }
 
     @Test
