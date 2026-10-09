@@ -150,10 +150,10 @@ fun CurrencyBalance.displayText(locale: Locale = Locale.getDefault()): String {
 }
 
 private fun List<FolderAccount>.sortedFolderNames(): List<FolderAccount> =
-    sortedWith(
-        compareBy<FolderAccount>(String.CASE_INSENSITIVE_ORDER) { it.name }
-            .thenBy { it.currencyCode },
-    )
+    sortedWith { left, right ->
+        val nameComparison = left.name.compareTo(right.name, ignoreCase = true)
+        if (nameComparison != 0) nameComparison else left.currencyCode.compareTo(right.currencyCode)
+    }
 
 private fun List<TransactionTag>.sortedTagNames(): List<TransactionTag> =
     sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
