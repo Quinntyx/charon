@@ -1,5 +1,8 @@
 package dev.quinntyx.charon.backup
 
+import java.io.ByteArrayInputStream
+import java.io.InputStream
+
 /** A logical application record with a stable identity chosen by its owning repository. */
 data class BackupRecord(
     val collection: String,
@@ -7,26 +10,44 @@ data class BackupRecord(
     val payloadJson: String,
 )
 
-/** Receipt bytes are kept in the archive rather than encoded into JSON. */
-data class BackupReceipt(
+/**
+ * Repeat-free receipt source used during export. Production callers should use the streaming
+ * constructor so receipt files are not accumulated in the Android heap.
+ */
+class BackupReceipt(
     val stableId: String,
     val mimeType: String,
-    val bytes: ByteArray,
+    val size: Long,
+    private val openContent: () -> InputStream,
 ) {
-    override fun equals(other: Any?): Boolean =
-        other is BackupReceipt &&
-            stableId == other.stableId &&
-            mimeType == other.mimeType &&
-            bytes.contentEquals(other.bytes)
+    /** Convenience for small values and tests. The streaming constructor is preferred for files. */
+    constructor(stableId: String, mimeType: String, bytes: ByteArray) : this(
+        stableId = stableId,
+        mimeType = mimeType,
+        size = bytes.size.toLong(),
+        openContent = { ByteArrayInputStream(bytes) },
+    )
 
-    override fun hashCode(): Int =
-        31 * (31 * stableId.hashCode() + mimeType.hashCode()) + bytes.contentHashCode()
+    fun openStream(): InputStream = openContent()
 }
 
 data class BackupSnapshot(
     val createdAtEpochMillis: Long,
     val records: List<BackupRecord>,
     val receipts: List<BackupReceipt>,
+)
+
+/** Validated non-binary backup content passed to a restore transaction. */
+data class BackupData(
+    val createdAtEpochMillis: Long,
+    val records: List<BackupRecord>,
+)
+
+/** Metadata for receipt content that is streamed separately during restore. */
+data class BackupReceiptMetadata(
+    val stableId: String,
+    val mimeType: String,
+    val size: Long,
 )
 
 enum class DuplicatePolicy {
@@ -38,11 +59,14 @@ enum class DuplicatePolicy {
 }
 
 /**
- * The persistence owner must implement this as a real database transaction (and staged receipt
- * file operation). The coordinator always calls [rollback] after a failed apply or commit.
+ * The persistence owner must implement this as a real database transaction plus staged receipt
+ * file operations. Receipt [content] is valid only for the duration of [applyReceipt], so it must
+ * be copied to staging storage before the method returns. The coordinator always calls [rollback]
+ * after a failed apply or commit.
  */
 interface RestoreSession {
-    suspend fun apply(snapshot: BackupSnapshot, duplicatePolicy: DuplicatePolicy)
+    suspend fun applyData(data: BackupData, duplicatePolicy: DuplicatePolicy)
+    suspend fun applyReceipt(receipt: BackupReceiptMetadata, content: InputStream)
     suspend fun commit()
     suspend fun rollback()
 }

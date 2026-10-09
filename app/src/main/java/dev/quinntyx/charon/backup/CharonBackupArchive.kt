@@ -20,82 +20,63 @@ class CharonBackupArchive(
         val maxEntries: Int = 10_002,
         val maxEntryBytes: Long = 64L * 1024L * 1024L,
         val maxTotalBytes: Long = 512L * 1024L * 1024L,
+        val maxMetadataEntryBytes: Long = 8L * 1024L * 1024L,
         val maxRecords: Int = 250_000,
         val maxReceipts: Int = 10_000,
     )
 
+    /** Writes receipt sources directly into the ZIP without collecting their bytes in memory. */
     fun write(snapshot: BackupSnapshot, output: OutputStream) {
         validateSnapshot(snapshot)
-
         val sortedRecords = snapshot.records.sortedWith(compareBy(BackupRecord::collection, BackupRecord::stableId))
         val sortedReceipts = snapshot.receipts.sortedBy(BackupReceipt::stableId)
-        val dataBytes = encodeRecords(sortedRecords)
-        enforceEntrySize(DATA_PATH, dataBytes.size.toLong())
-
-        val receiptDescriptors = sortedReceipts.mapIndexed { index, receipt ->
-            enforceEntrySize("receipt ${receipt.stableId}", receipt.bytes.size.toLong())
-            ReceiptDescriptor(
-                stableId = receipt.stableId,
-                mimeType = receipt.mimeType,
-                path = "receipts/${index.toString().padStart(5, '0')}.bin",
-                size = receipt.bytes.size.toLong(),
-                sha256 = sha256(receipt.bytes),
-            )
-        }
-        val manifestBytes = encodeManifest(snapshot, dataBytes, receiptDescriptors)
-        enforceEntrySize(MANIFEST_PATH, manifestBytes.size.toLong())
-
-        val totalBytes = manifestBytes.size.toLong() + dataBytes.size +
-            sortedReceipts.sumOf { it.bytes.size.toLong() }
-        if (totalBytes > limits.maxTotalBytes) {
-            throw InvalidBackupException("Backup exceeds the uncompressed size limit")
-        }
+        var totalBytes = 0L
 
         ZipOutputStream(output).use { zip ->
-            putEntry(zip, MANIFEST_PATH, manifestBytes)
-            putEntry(zip, DATA_PATH, dataBytes)
-            receiptDescriptors.zip(sortedReceipts).forEach { (descriptor, receipt) ->
-                putEntry(zip, descriptor.path, receipt.bytes)
+            val dataFingerprint = writeEntry(zip, DATA_PATH, totalBytes) { entry ->
+                writeRecords(sortedRecords, entry)
             }
-        }
-    }
+            totalBytes = checkedTotal(totalBytes, dataFingerprint.size)
 
-    fun read(input: InputStream): BackupSnapshot {
-        val entries = LinkedHashMap<String, ByteArray>()
-        var totalBytes = 0L
-        try {
-            ZipInputStream(input).use { zip ->
-                while (true) {
-                    val entry = zip.nextEntry ?: break
-                    val name = entry.name
-                    validateEntryPath(name)
-                    if (entry.isDirectory) {
-                        throw InvalidBackupException("Directory entries are not allowed: $name")
+            val receiptDescriptors = sortedReceipts.mapIndexed { index, receipt ->
+                val path = "receipts/${index.toString().padStart(5, '0')}.bin"
+                val fingerprint = writeEntry(zip, path, totalBytes, receipt.size) { entry ->
+                    val source = try {
+                        receipt.openStream()
+                    } catch (error: Exception) {
+                        throw InvalidBackupException("Cannot open receipt content: ${receipt.stableId}", error)
                     }
-                    if (entries.containsKey(name)) {
-                        throw InvalidBackupException("Duplicate ZIP entry: $name")
-                    }
-                    if (entries.size >= limits.maxEntries) {
-                        throw InvalidBackupException("Backup contains too many entries")
-                    }
-                    val bytes = readEntry(zip, name, totalBytes)
-                    totalBytes += bytes.size
-                    entries[name] = bytes
-                    zip.closeEntry()
+                    source.use { input -> copy(input, entry) }
                 }
+                totalBytes = checkedTotal(totalBytes, fingerprint.size)
+                ReceiptDescriptor(
+                    metadata = BackupReceiptMetadata(receipt.stableId, receipt.mimeType, fingerprint.size),
+                    path = path,
+                    sha256 = fingerprint.sha256,
+                )
             }
-        } catch (error: InvalidBackupException) {
-            throw error
-        } catch (error: IOException) {
-            throw InvalidBackupException("Backup is not a readable ZIP archive", error)
-        }
 
-        return decodeAndValidate(entries)
+            val manifestBytes = encodeManifest(snapshot.createdAtEpochMillis, dataFingerprint, receiptDescriptors)
+            if (manifestBytes.size.toLong() > limits.maxMetadataEntryBytes) {
+                throw InvalidBackupException("Backup manifest exceeds the metadata size limit")
+            }
+            val manifestFingerprint = writeEntry(zip, MANIFEST_PATH, totalBytes) { entry ->
+                entry.write(manifestBytes)
+            }
+            checkedTotal(totalBytes, manifestFingerprint.size)
+        }
     }
 
-    private fun decodeAndValidate(entries: Map<String, ByteArray>): BackupSnapshot {
-        val manifestBytes = entries[MANIFEST_PATH]
+    /**
+     * Fully validates one pass without retaining receipt bodies. The returned plan is safe to use
+     * only with [streamReceipts], which verifies a freshly opened second pass while streaming.
+     */
+    internal fun validate(input: InputStream): ValidatedBackup {
+        val scan = scan(input, captureMetadata = true)
+        val manifestBytes = scan.captured[MANIFEST_PATH]
             ?: throw InvalidBackupException("Backup manifest is missing")
+        val dataBytes = scan.captured[DATA_PATH]
+            ?: throw InvalidBackupException("Backup data is missing")
         val manifest = parseObject(manifestBytes, "manifest")
         if (manifest.optString("format") != FORMAT_NAME) {
             throw InvalidBackupException("Not a Charon backup")
@@ -109,8 +90,11 @@ class CharonBackupArchive(
         val dataObject = requiredObject(manifest, "data")
         val dataPath = requiredString(dataObject, "path")
         if (dataPath != DATA_PATH) throw InvalidBackupException("Unexpected data entry path")
-        val dataBytes = entries[dataPath] ?: throw InvalidBackupException("Backup data is missing")
-        validateDescriptor(dataObject, dataPath, dataBytes)
+        validateDescriptor(
+            descriptor = dataObject,
+            path = dataPath,
+            fingerprint = scan.entries[dataPath] ?: throw InvalidBackupException("Backup data is missing"),
+        )
 
         val receiptArray = requiredArray(manifest, "receipts")
         if (receiptArray.length() > limits.maxReceipts) {
@@ -118,7 +102,7 @@ class CharonBackupArchive(
         }
         val receiptIds = HashSet<String>()
         val receiptPaths = HashSet<String>()
-        val receipts = ArrayList<BackupReceipt>(receiptArray.length())
+        val receipts = ArrayList<ReceiptDescriptor>(receiptArray.length())
         val expectedPaths = linkedSetOf(MANIFEST_PATH, DATA_PATH)
         for (index in 0 until receiptArray.length()) {
             val descriptor = receiptArray.optJSONObject(index)
@@ -135,25 +119,115 @@ class CharonBackupArchive(
             if (!path.startsWith("receipts/") || !receiptPaths.add(path)) {
                 throw InvalidBackupException("Invalid or duplicate receipt path: $path")
             }
-            val bytes = entries[path] ?: throw InvalidBackupException("Receipt entry is missing: $path")
-            validateDescriptor(descriptor, path, bytes)
+            val fingerprint = scan.entries[path]
+                ?: throw InvalidBackupException("Receipt entry is missing: $path")
+            validateDescriptor(descriptor, path, fingerprint)
             expectedPaths += path
-            receipts += BackupReceipt(stableId, mimeType, bytes)
+            receipts += ReceiptDescriptor(
+                metadata = BackupReceiptMetadata(stableId, mimeType, fingerprint.size),
+                path = path,
+                sha256 = fingerprint.sha256,
+            )
         }
 
-        val unexpectedPaths = entries.keys - expectedPaths
+        val unexpectedPaths = scan.entries.keys - expectedPaths
         if (unexpectedPaths.isNotEmpty()) {
             throw InvalidBackupException("Unexpected ZIP entry: ${unexpectedPaths.first()}")
         }
 
-        val records = decodeRecords(dataBytes)
-        return BackupSnapshot(createdAt, records, receipts)
+        return ValidatedBackup(
+            data = BackupData(createdAt, decodeRecords(dataBytes)),
+            receipts = receipts,
+            entries = scan.entries,
+        )
+    }
+
+    /**
+     * Streams each receipt from a newly opened archive and verifies that the complete second pass
+     * is byte-for-byte equivalent to the validated pass. Receipt streams are never materialized.
+     */
+    internal suspend fun streamReceipts(
+        input: InputStream,
+        validated: ValidatedBackup,
+        consume: suspend (BackupReceiptMetadata, InputStream) -> Unit,
+    ) {
+        val receiptByPath = validated.receipts.associateBy(ReceiptDescriptor::path)
+        val seen = LinkedHashSet<String>()
+        var totalBytes = 0L
+        val zip = ZipInputStream(input)
+        try {
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                val name = entry.name
+                validateZipEntry(name, entry.isDirectory, seen)
+                val stream = ScanningEntryInputStream(zip, name, totalBytes)
+                val receipt = receiptByPath[name]
+                if (receipt == null) {
+                    drain(stream)
+                } else {
+                    consume(receipt.metadata, stream)
+                    drain(stream)
+                }
+                val fingerprint = stream.fingerprint()
+                totalBytes = checkedTotal(totalBytes, fingerprint.size)
+                val expected = validated.entries[name]
+                    ?: throw InvalidBackupException("Unexpected ZIP entry: $name")
+                if (fingerprint != expected) {
+                    throw InvalidBackupException("Backup changed while it was being restored: $name")
+                }
+                zip.closeEntry()
+            }
+        } catch (error: InvalidBackupException) {
+            throw error
+        } catch (error: IOException) {
+            throw InvalidBackupException("Backup is not a readable ZIP archive", error)
+        } finally {
+            zip.close()
+        }
+        if (seen != validated.entries.keys) {
+            throw InvalidBackupException("Backup changed while it was being restored")
+        }
+    }
+
+    private fun scan(input: InputStream, captureMetadata: Boolean): ArchiveScan {
+        val entries = LinkedHashMap<String, Fingerprint>()
+        val captured = HashMap<String, ByteArray>()
+        var totalBytes = 0L
+        val zip = ZipInputStream(input)
+        try {
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                val name = entry.name
+                validateZipEntry(name, entry.isDirectory, entries.keys)
+                val capture = captureMetadata && (name == MANIFEST_PATH || name == DATA_PATH)
+                val output = if (capture) ByteArrayOutputStream() else null
+                val stream = ScanningEntryInputStream(zip, name, totalBytes)
+                copy(stream, output)
+                val fingerprint = stream.fingerprint()
+                totalBytes = checkedTotal(totalBytes, fingerprint.size)
+                entries[name] = fingerprint
+                if (output != null) captured[name] = output.toByteArray()
+                zip.closeEntry()
+            }
+        } catch (error: InvalidBackupException) {
+            throw error
+        } catch (error: IOException) {
+            throw InvalidBackupException("Backup is not a readable ZIP archive", error)
+        } finally {
+            zip.close()
+        }
+        return ArchiveScan(entries, captured)
+    }
+
+    private fun validateZipEntry(name: String, isDirectory: Boolean, seen: Collection<String>) {
+        validateEntryPath(name)
+        if (isDirectory) throw InvalidBackupException("Directory entries are not allowed: $name")
+        if (name in seen) throw InvalidBackupException("Duplicate ZIP entry: $name")
+        if (seen.size >= limits.maxEntries) throw InvalidBackupException("Backup contains too many entries")
     }
 
     private fun validateSnapshot(snapshot: BackupSnapshot) {
-        if (snapshot.createdAtEpochMillis < 0) {
-            throw InvalidBackupException("Invalid backup creation time")
-        }
+        if (snapshot.createdAtEpochMillis < 0) throw InvalidBackupException("Invalid backup creation time")
         if (snapshot.records.size > limits.maxRecords) {
             throw InvalidBackupException("Backup contains too many records")
         }
@@ -178,23 +252,31 @@ class CharonBackupArchive(
         snapshot.receipts.forEach { receipt ->
             validateStableId(receipt.stableId, "receipt stable ID")
             validateMimeType(receipt.mimeType)
+            if (receipt.size < 0 || receipt.size > limits.maxEntryBytes) {
+                throw InvalidBackupException("Invalid receipt size: ${receipt.stableId}")
+            }
             if (!receiptIds.add(receipt.stableId)) {
                 throw InvalidBackupException("Duplicate receipt stable ID: ${receipt.stableId}")
             }
         }
     }
 
-    private fun encodeRecords(records: List<BackupRecord>): ByteArray {
-        val array = JSONArray()
-        records.forEach { record ->
-            array.put(
-                JSONObject()
-                    .put("collection", record.collection)
-                    .put("stableId", record.stableId)
-                    .put("payload", parsePayload(record.payloadJson)),
-            )
+    private fun writeRecords(records: List<BackupRecord>, output: OutputStream) {
+        output.write("{\"records\":[".toByteArray(Charsets.UTF_8))
+        records.forEachIndexed { index, record ->
+            if (index > 0) output.write(','.code)
+            val encoded = buildString {
+                append("{\"collection\":")
+                append(JSONObject.quote(record.collection))
+                append(",\"stableId\":")
+                append(JSONObject.quote(record.stableId))
+                append(",\"payload\":")
+                append(parsePayload(record.payloadJson).toString())
+                append('}')
+            }
+            output.write(encoded.toByteArray(Charsets.UTF_8))
         }
-        return JSONObject().put("records", array).toString().toByteArray(Charsets.UTF_8)
+        output.write("]}".toByteArray(Charsets.UTF_8))
     }
 
     private fun decodeRecords(bytes: ByteArray): List<BackupRecord> {
@@ -222,47 +304,162 @@ class CharonBackupArchive(
     }
 
     private fun encodeManifest(
-        snapshot: BackupSnapshot,
-        dataBytes: ByteArray,
+        createdAtEpochMillis: Long,
+        data: Fingerprint,
         receipts: List<ReceiptDescriptor>,
     ): ByteArray {
         val receiptArray = JSONArray()
         receipts.forEach { receipt ->
             receiptArray.put(
                 JSONObject()
-                    .put("stableId", receipt.stableId)
-                    .put("mimeType", receipt.mimeType)
+                    .put("stableId", receipt.metadata.stableId)
+                    .put("mimeType", receipt.metadata.mimeType)
                     .put("path", receipt.path)
-                    .put("size", receipt.size)
+                    .put("size", receipt.metadata.size)
                     .put("sha256", receipt.sha256),
             )
         }
         return JSONObject()
             .put("format", FORMAT_NAME)
             .put("version", CURRENT_VERSION)
-            .put("createdAtEpochMillis", snapshot.createdAtEpochMillis)
+            .put("createdAtEpochMillis", createdAtEpochMillis)
             .put(
                 "data",
                 JSONObject()
                     .put("path", DATA_PATH)
-                    .put("size", dataBytes.size.toLong())
-                    .put("sha256", sha256(dataBytes)),
+                    .put("size", data.size)
+                    .put("sha256", data.sha256),
             )
             .put("receipts", receiptArray)
             .toString()
             .toByteArray(Charsets.UTF_8)
     }
 
-    private fun validateDescriptor(descriptor: JSONObject, path: String, bytes: ByteArray) {
+    private fun validateDescriptor(descriptor: JSONObject, path: String, fingerprint: Fingerprint) {
         val declaredSize = requiredLong(descriptor, "size")
-        if (declaredSize != bytes.size.toLong()) {
-            throw InvalidBackupException("Size mismatch for $path")
-        }
+        if (declaredSize != fingerprint.size) throw InvalidBackupException("Size mismatch for $path")
         val declaredHash = requiredString(descriptor, "sha256")
-        if (!HASH_PATTERN.matches(declaredHash) || declaredHash != sha256(bytes)) {
+        if (!HASH_PATTERN.matches(declaredHash) || declaredHash != fingerprint.sha256) {
             throw InvalidBackupException("Checksum mismatch for $path")
         }
     }
+
+    private fun writeEntry(
+        zip: ZipOutputStream,
+        path: String,
+        bytesBeforeEntry: Long,
+        expectedSize: Long? = null,
+        write: (OutputStream) -> Unit,
+    ): Fingerprint {
+        zip.putNextEntry(ZipEntry(path).apply { time = 0L })
+        val measured = MeasuringOutputStream(zip, path, bytesBeforeEntry, expectedSize)
+        try {
+            write(measured)
+            val fingerprint = measured.fingerprint()
+            if (expectedSize != null && fingerprint.size != expectedSize) {
+                throw InvalidBackupException("Size mismatch while reading receipt source: $path")
+            }
+            return fingerprint
+        } finally {
+            zip.closeEntry()
+        }
+    }
+
+    private inner class MeasuringOutputStream(
+        private val output: OutputStream,
+        private val name: String,
+        private val bytesBeforeEntry: Long,
+        private val expectedSize: Long?,
+    ) : OutputStream() {
+        private val digest = MessageDigest.getInstance("SHA-256")
+        private var size = 0L
+
+        override fun write(value: Int) {
+            val byte = byteArrayOf(value.toByte())
+            write(byte, 0, 1)
+        }
+
+        override fun write(bytes: ByteArray, offset: Int, length: Int) {
+            val nextSize = size + length
+            enforceReadSize(name, nextSize, bytesBeforeEntry)
+            if (expectedSize != null && nextSize > expectedSize) {
+                throw InvalidBackupException("Receipt source exceeds its declared size: $name")
+            }
+            output.write(bytes, offset, length)
+            digest.update(bytes, offset, length)
+            size = nextSize
+        }
+
+        fun fingerprint(): Fingerprint = Fingerprint(size, digest.digest().toHex())
+    }
+
+    private inner class ScanningEntryInputStream(
+        private val input: InputStream,
+        private val name: String,
+        private val bytesBeforeEntry: Long,
+    ) : InputStream() {
+        private val digest = MessageDigest.getInstance("SHA-256")
+        private var size = 0L
+        private var finished = false
+
+        override fun read(): Int {
+            val one = ByteArray(1)
+            return if (read(one, 0, 1) < 0) -1 else one[0].toInt() and 0xff
+        }
+
+        override fun read(bytes: ByteArray, offset: Int, length: Int): Int {
+            if (finished) return -1
+            val count = input.read(bytes, offset, length)
+            if (count < 0) {
+                finished = true
+                return -1
+            }
+            val nextSize = size + count
+            enforceReadSize(name, nextSize, bytesBeforeEntry)
+            digest.update(bytes, offset, count)
+            size = nextSize
+            return count
+        }
+
+        override fun close() {
+            drain(this)
+        }
+
+        fun fingerprint(): Fingerprint {
+            if (!finished) throw IllegalStateException("ZIP entry was not fully consumed")
+            return Fingerprint(size, digest.digest().toHex())
+        }
+    }
+
+    private fun enforceReadSize(name: String, entryBytes: Long, bytesBeforeEntry: Long) {
+        if (entryBytes > limits.maxEntryBytes) {
+            throw InvalidBackupException("ZIP entry exceeds size limit: $name")
+        }
+        if ((name == MANIFEST_PATH || name == DATA_PATH) && entryBytes > limits.maxMetadataEntryBytes) {
+            throw InvalidBackupException("ZIP metadata entry exceeds size limit: $name")
+        }
+        if (bytesBeforeEntry > limits.maxTotalBytes - entryBytes) {
+            throw InvalidBackupException("Backup exceeds the uncompressed size limit")
+        }
+    }
+
+    private fun checkedTotal(current: Long, added: Long): Long {
+        if (added < 0 || current > limits.maxTotalBytes - added) {
+            throw InvalidBackupException("Backup exceeds the uncompressed size limit")
+        }
+        return current + added
+    }
+
+    private fun copy(input: InputStream, output: OutputStream?) {
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) return
+            output?.write(buffer, 0, count)
+        }
+    }
+
+    private fun drain(input: InputStream) = copy(input, null)
 
     private fun parseObject(bytes: ByteArray, label: String): JSONObject = try {
         JSONObject(bytes.toString(Charsets.UTF_8))
@@ -329,55 +526,31 @@ class CharonBackupArchive(
         }
     }
 
-    private fun readEntry(zip: ZipInputStream, name: String, bytesBeforeEntry: Long): ByteArray {
-        val output = ByteArrayOutputStream()
-        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-        var entryBytes = 0L
-        while (true) {
-            val count = zip.read(buffer)
-            if (count < 0) break
-            entryBytes += count
-            if (entryBytes > limits.maxEntryBytes) {
-                throw InvalidBackupException("ZIP entry exceeds size limit: $name")
-            }
-            if (bytesBeforeEntry + entryBytes > limits.maxTotalBytes) {
-                throw InvalidBackupException("Backup exceeds the uncompressed size limit")
-            }
-            output.write(buffer, 0, count)
-        }
-        return output.toByteArray()
-    }
-
-    private fun enforceEntrySize(label: String, size: Long) {
-        if (size > limits.maxEntryBytes) {
-            throw InvalidBackupException("Entry exceeds size limit: $label")
+    private fun ByteArray.toHex(): String = buildString(size * 2) {
+        this@toHex.forEach { byte ->
+            val unsigned = byte.toInt() and 0xff
+            append(HEX_CHARS[unsigned ushr 4])
+            append(HEX_CHARS[unsigned and 0x0f])
         }
     }
 
-    private fun putEntry(zip: ZipOutputStream, path: String, bytes: ByteArray) {
-        val entry = ZipEntry(path).apply { time = 0L }
-        zip.putNextEntry(entry)
-        zip.write(bytes)
-        zip.closeEntry()
-    }
+    internal data class ValidatedBackup(
+        val data: BackupData,
+        val receipts: List<ReceiptDescriptor>,
+        val entries: Map<String, Fingerprint>,
+    )
 
-    private fun sha256(bytes: ByteArray): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
-        return buildString(digest.size * 2) {
-            digest.forEach { byte ->
-                val unsigned = byte.toInt() and 0xff
-                append(HEX_CHARS[unsigned ushr 4])
-                append(HEX_CHARS[unsigned and 0x0f])
-            }
-        }
-    }
-
-    private data class ReceiptDescriptor(
-        val stableId: String,
-        val mimeType: String,
+    internal data class ReceiptDescriptor(
+        val metadata: BackupReceiptMetadata,
         val path: String,
-        val size: Long,
         val sha256: String,
+    )
+
+    internal data class Fingerprint(val size: Long, val sha256: String)
+
+    private data class ArchiveScan(
+        val entries: Map<String, Fingerprint>,
+        val captured: Map<String, ByteArray>,
     )
 
     companion object {

@@ -23,8 +23,13 @@ class BackupDocumentService(
         target: TransactionalRestoreTarget,
         duplicatePolicy: DuplicatePolicy,
     ): RestoreResult = withContext(Dispatchers.IO) {
-        val input = contentResolver.openInputStream(uri)
-            ?: throw FileNotFoundException("The selected backup document cannot be opened")
-        input.use { restoreCoordinator.restore(it, target, duplicatePolicy) }
+        restoreCoordinator.restore(
+            openInput = {
+                contentResolver.openInputStream(uri)
+                    ?: throw FileNotFoundException("The selected backup document cannot be opened")
+            },
+            target = target,
+            duplicatePolicy = duplicatePolicy,
+        )
     }
 }
