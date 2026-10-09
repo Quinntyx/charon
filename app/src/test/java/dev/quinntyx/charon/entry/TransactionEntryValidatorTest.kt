@@ -157,6 +157,59 @@ class TransactionEntryValidatorTest {
     }
 
     @Test
+    fun lateOcrPreservesEveryUserEditAndReceiptRemoval() {
+        val state = TransactionEntryState(
+            TransactionEntryDraft(receipt = ReceiptAttachment("content://receipts/late")),
+        )
+        state.setKind(TransactionKind.TRANSFER)
+        state.setAmount("19.95")
+        state.setDate("2025-07-04")
+        state.setMerchant("Corrected merchant")
+        state.setCurrencyCode("USD")
+        state.toggleTag(groceries.id)
+        state.setTransferDestination(checking.id)
+        state.removeReceipt()
+
+        state.applyOcrSuggestion(
+            OcrEntrySuggestion(
+                amount = "99.99",
+                date = "2024-01-01",
+                merchant = "Late OCR merchant",
+                currencyCode = "EUR",
+            ),
+        )
+
+        assertEquals(TransactionKind.TRANSFER, state.draft.kind)
+        assertEquals("19.95", state.draft.amount)
+        assertEquals("2025-07-04", state.draft.date)
+        assertEquals("Corrected merchant", state.draft.merchant)
+        assertEquals("USD", state.draft.currencyCode)
+        assertEquals(setOf(groceries.id), state.draft.selectedTagIds)
+        assertEquals(checking.id, state.draft.transferDestinationFolderId)
+        assertNull(state.draft.receipt)
+    }
+
+    @Test
+    fun lateOcrFillsOnlyUntouchedBlankFieldsIncludingIntentionalBlankEdit() {
+        val state = TransactionEntryState(TransactionEntryDraft())
+        state.setMerchant("")
+
+        state.applyOcrSuggestion(
+            OcrEntrySuggestion(
+                amount = "7.25",
+                date = "2025-08-09",
+                merchant = "Must not overwrite intentional blank",
+                currencyCode = "CAD",
+            ),
+        )
+
+        assertEquals("7.25", state.draft.amount)
+        assertEquals("2025-08-09", state.draft.date)
+        assertEquals("", state.draft.merchant)
+        assertEquals("CAD", state.draft.currencyCode)
+    }
+
+    @Test
     fun nonTransferIgnoresStaleTransferDestination() {
         val result = validate(
             validDraft().copy(

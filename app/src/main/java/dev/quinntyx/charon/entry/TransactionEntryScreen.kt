@@ -25,6 +25,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,11 +54,24 @@ data class TransactionEntryConfig(
     val ocrSuggestion: OcrEntrySuggestion? = null,
 )
 
+/** Fields OCR may suggest and whose explicit user edits must win over late OCR results. */
+internal enum class OcrEditableField {
+    AMOUNT,
+    DATE,
+    MERCHANT,
+    CURRENCY,
+}
+
 /** Hoistable editable state for both create and edit flows. */
 @Stable
-class TransactionEntryState internal constructor(initialDraft: TransactionEntryDraft) {
+class TransactionEntryState internal constructor(
+    initialDraft: TransactionEntryDraft,
+    editedOcrFields: Set<OcrEditableField> = emptySet(),
+) {
     var draft by mutableStateOf(initialDraft)
         private set
+
+    private val editedOcrFields = editedOcrFields.toMutableSet()
 
     fun setKind(value: TransactionKind) {
         draft = draft.copy(
@@ -71,20 +85,54 @@ class TransactionEntryState internal constructor(initialDraft: TransactionEntryD
     }
 
     fun setAmount(value: String) {
+        editedOcrFields += OcrEditableField.AMOUNT
         draft = draft.copy(amount = value)
     }
 
     fun setDate(value: String) {
+        editedOcrFields += OcrEditableField.DATE
         draft = draft.copy(date = value)
     }
 
     fun setMerchant(value: String) {
+        editedOcrFields += OcrEditableField.MERCHANT
         draft = draft.copy(merchant = value)
     }
 
     fun setCurrencyCode(value: String) {
+        editedOcrFields += OcrEditableField.CURRENCY
         draft = draft.copy(currencyCode = value)
     }
+
+    /** Applies asynchronous OCR only to blank fields the user has never edited. */
+    internal fun applyOcrSuggestion(suggestion: OcrEntrySuggestion?) {
+        if (suggestion == null) return
+        draft = draft.copy(
+            amount = draft.amount.ocrValueUnlessEdited(
+                suggestion.amount,
+                OcrEditableField.AMOUNT,
+            ),
+            date = draft.date.ocrValueUnlessEdited(
+                suggestion.date,
+                OcrEditableField.DATE,
+            ),
+            merchant = draft.merchant.ocrValueUnlessEdited(
+                suggestion.merchant,
+                OcrEditableField.MERCHANT,
+            ),
+            currencyCode = draft.currencyCode.ocrValueUnlessEdited(
+                suggestion.currencyCode,
+                OcrEditableField.CURRENCY,
+            ),
+        )
+    }
+
+    internal fun editedOcrFields(): Set<OcrEditableField> = editedOcrFields.toSet()
+
+    private fun String.ocrValueUnlessEdited(
+        suggestion: String?,
+        field: OcrEditableField,
+    ): String = if (isBlank() && field !in editedOcrFields) suggestion.orEmpty() else this
 
     fun toggleTag(tagId: String) {
         val updated = draft.selectedTagIds.toMutableSet().apply {
@@ -116,12 +164,13 @@ private val transactionEntryStateSaver = listSaver<TransactionEntryState, Any>(
             draft.transferDestinationFolderId.orEmpty(),
             draft.receipt?.uri.orEmpty(),
             draft.receipt?.displayName.orEmpty(),
+            ArrayList(state.editedOcrFields().map { it.name }),
         )
     },
     restore = { values ->
         val receiptUri = values[8] as String
         TransactionEntryState(
-            TransactionEntryDraft(
+            initialDraft = TransactionEntryDraft(
                 transactionId = (values[0] as String).ifEmpty { null },
                 kind = TransactionKind.valueOf(values[1] as String),
                 amount = values[2] as String,
@@ -137,6 +186,9 @@ private val transactionEntryStateSaver = listSaver<TransactionEntryState, Any>(
                     )
                 },
             ),
+            editedOcrFields = (values[10] as ArrayList<*>)
+                .filterIsInstance<String>()
+                .mapTo(mutableSetOf()) { OcrEditableField.valueOf(it) },
         )
     },
 )
@@ -145,12 +197,17 @@ private val transactionEntryStateSaver = listSaver<TransactionEntryState, Any>(
 fun rememberTransactionEntryState(
     initialDraft: TransactionEntryDraft,
     ocrSuggestion: OcrEntrySuggestion? = null,
-): TransactionEntryState = rememberSaveable(
-    initialDraft,
-    ocrSuggestion,
-    saver = transactionEntryStateSaver,
-) {
-    TransactionEntryState(initialDraft.withOcrSuggestion(ocrSuggestion))
+): TransactionEntryState {
+    val state = rememberSaveable(
+        initialDraft,
+        saver = transactionEntryStateSaver,
+    ) {
+        TransactionEntryState(initialDraft).also { it.applyOcrSuggestion(ocrSuggestion) }
+    }
+    LaunchedEffect(state, ocrSuggestion) {
+        state.applyOcrSuggestion(ocrSuggestion)
+    }
+    return state
 }
 
 /**
