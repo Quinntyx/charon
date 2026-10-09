@@ -361,10 +361,16 @@ class CharonBackupArchive(
         zip.closeEntry()
     }
 
-    private fun sha256(bytes: ByteArray): String =
-        MessageDigest.getInstance("SHA-256")
-            .digest(bytes)
-            .joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    private fun sha256(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return buildString(digest.size * 2) {
+            digest.forEach { byte ->
+                val unsigned = byte.toInt() and 0xff
+                append(HEX_CHARS[unsigned ushr 4])
+                append(HEX_CHARS[unsigned and 0x0f])
+            }
+        }
+    }
 
     private data class ReceiptDescriptor(
         val stableId: String,
@@ -381,6 +387,7 @@ class CharonBackupArchive(
         private const val FORMAT_NAME = "charon-backup"
         private const val MANIFEST_PATH = "manifest.json"
         private const val DATA_PATH = "data.json"
+        private const val HEX_CHARS = "0123456789abcdef"
         private val COLLECTION_PATTERN = Regex("[a-z][a-z0-9_-]{0,63}")
         private val HASH_PATTERN = Regex("[0-9a-f]{64}")
     }
