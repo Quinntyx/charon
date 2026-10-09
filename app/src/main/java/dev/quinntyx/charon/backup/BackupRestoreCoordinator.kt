@@ -1,6 +1,7 @@
 package dev.quinntyx.charon.backup
 
-import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import java.io.InputStream
 
 /** Coordinates validation and transactional replacement independently of Android URI handling. */
@@ -20,11 +21,13 @@ class BackupRestoreCoordinator(
             session.commit()
         } catch (failure: Throwable) {
             try {
-                session.rollback()
+                // Cancellation must not prevent Room or receipt-file cleanup from suspending.
+                withContext(NonCancellable) {
+                    session.rollback()
+                }
             } catch (rollbackFailure: Throwable) {
                 failure.addSuppressed(rollbackFailure)
             }
-            if (failure is CancellationException) throw failure
             throw failure
         }
         return RestoreResult(snapshot.records.size, snapshot.receipts.size, duplicatePolicy)

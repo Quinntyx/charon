@@ -70,7 +70,7 @@ fun BackupDocumentPanel(
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
-                    status = "Restore failed; existing data kept: ${error.message ?: "unknown error"}"
+                    status = "Restore failed: ${error.message ?: "unknown error"}. Check your data before retrying."
                 } finally {
                     busy = false
                 }

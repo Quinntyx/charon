@@ -1,5 +1,12 @@
 package dev.quinntyx.charon.backup
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -70,6 +77,67 @@ class BackupRestoreCoordinatorTest {
     }
 
     @Test
+    fun `job cancellation still completes suspending rollback`() = runTest {
+        val applyStarted = CompletableDeferred<Unit>()
+        var rollbackContextWasActive = false
+        var rollbackFinished = false
+        val target = TransactionalRestoreTarget {
+            object : RestoreSession {
+                override suspend fun apply(snapshot: BackupSnapshot, duplicatePolicy: DuplicatePolicy) {
+                    applyStarted.complete(Unit)
+                    awaitCancellation()
+                }
+
+                override suspend fun commit() = Unit
+
+                override suspend fun rollback() {
+                    rollbackContextWasActive = currentCoroutineContext().isActive
+                    delay(1)
+                    rollbackFinished = true
+                }
+            }
+        }
+        val restoreJob = launch {
+            coordinator.restore(
+                ByteArrayInputStream(validArchive()),
+                target,
+                DuplicatePolicy.KEEP_EXISTING,
+            )
+        }
+
+        applyStarted.await()
+        restoreJob.cancelAndJoin()
+
+        assertTrue(restoreJob.isCancelled)
+        assertTrue(rollbackContextWasActive)
+        assertTrue(rollbackFinished)
+    }
+
+    @Test
+    fun `rollback failure is suppressed on the original failure`() {
+        val applyFailure = IllegalStateException("database rejected record")
+        val rollbackFailure = IllegalStateException("rollback failed")
+        val target = RecordingTarget(
+            applyFailure = applyFailure,
+            rollbackFailure = rollbackFailure,
+        )
+
+        val actual = assertThrows(IllegalStateException::class.java) {
+            runTest {
+                coordinator.restore(
+                    ByteArrayInputStream(validArchive()),
+                    target,
+                    DuplicatePolicy.KEEP_EXISTING,
+                )
+            }
+        }
+
+        assertSame(applyFailure, actual)
+        assertEquals(1, actual.suppressed.size)
+        assertSame(rollbackFailure, actual.suppressed.single())
+    }
+
+    @Test
     fun `corrupt archive is rejected before restore transaction begins`() {
         val target = RecordingTarget()
 
@@ -99,6 +167,7 @@ class BackupRestoreCoordinatorTest {
     private class RecordingTarget(
         private val applyFailure: Throwable? = null,
         private val commitFailure: Throwable? = null,
+        private val rollbackFailure: Throwable? = null,
     ) : TransactionalRestoreTarget {
         var began = false
         var appliedSnapshot: BackupSnapshot? = null
@@ -122,6 +191,7 @@ class BackupRestoreCoordinatorTest {
 
                 override suspend fun rollback() {
                     rolledBack = true
+                    rollbackFailure?.let { throw it }
                 }
             }
         }
