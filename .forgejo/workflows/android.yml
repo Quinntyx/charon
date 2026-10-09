@@ -19,9 +19,18 @@ jobs:
           git checkout --detach FETCH_HEAD
       - name: Test, lint, and assemble
         run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
-      - name: Verify test discovery and APK output
+      - name: Verify exact tip, test discovery, and APK output
         run: |
-          test -f app/build/test-results/testDebugUnitTest/TEST-dev.quinntyx.charon.BootstrapTest.xml
-          test -f app/build/reports/lint-results-debug.html
+          test "$(git rev-parse HEAD)" = '${{ github.sha }}'
+          for report in \
+            TEST-dev.quinntyx.charon.BootstrapTest.xml \
+            TEST-dev.quinntyx.charon.receipt.ocr.ReceiptParserTest.xml \
+            TEST-dev.quinntyx.charon.recurrence.RecurrenceAtomicityTest.xml \
+            TEST-dev.quinntyx.charon.recurrence.RecurrenceRuleTest.xml \
+            TEST-dev.quinntyx.charon.recurrence.RecurrenceServiceTest.xml
+          do
+            test -s "app/build/test-results/testDebugUnitTest/$report"
+          done
+          test -s app/build/reports/lint-results-debug.html
           test -s app/build/outputs/apk/debug/app-debug.apk
-          printf 'Verified unit-test reports, lint report, and debug APK at this commit.\n'
+          printf 'Verified exact-tip OCR/recurrence tests, lint report, and debug APK.\n'
