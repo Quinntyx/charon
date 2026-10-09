@@ -160,6 +160,7 @@ class CharonBackupArchive(
                 val entry = zip.nextEntry ?: break
                 val name = entry.name
                 validateZipEntry(name, entry.isDirectory, seen)
+                seen += name
                 val stream = ScanningEntryInputStream(zip, name, totalBytes)
                 val receipt = receiptByPath[name]
                 if (receipt == null) {
