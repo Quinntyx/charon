@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -19,11 +19,11 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class DashboardViewModelTest {
-    private lateinit var dispatcher: StandardTestDispatcher
+    private lateinit var dispatcher: TestDispatcher
 
     @Before
     fun setUp() {
-        dispatcher = StandardTestDispatcher()
+        dispatcher = UnconfinedTestDispatcher()
         Dispatchers.setMain(dispatcher)
     }
 

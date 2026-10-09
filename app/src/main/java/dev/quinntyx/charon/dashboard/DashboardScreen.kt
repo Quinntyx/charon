@@ -21,9 +21,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -206,7 +206,7 @@ private fun DashboardHeader(onAddTransaction: () -> Unit) {
         }
         Spacer(Modifier.width(12.dp))
         Button(onClick = onAddTransaction) {
-            Icon(Icons.Default.ReceiptLong, contentDescription = null)
+            Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = null)
             Spacer(Modifier.width(8.dp))
             Text("Add")
         }
@@ -598,7 +598,7 @@ private fun TransactionDialog(
                         imageVector = if (transaction.hasReceipt) {
                             Icons.Default.AttachFile
                         } else {
-                            Icons.Default.ReceiptLong
+                            Icons.AutoMirrored.Filled.ReceiptLong
                         },
                         contentDescription = null,
                     )

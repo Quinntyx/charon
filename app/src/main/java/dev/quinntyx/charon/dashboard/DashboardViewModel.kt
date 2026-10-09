@@ -3,6 +3,7 @@ package dev.quinntyx.charon.dashboard
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import java.time.LocalDate
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class DashboardViewModel(
     private val repository: DashboardRepository,
 ) : ViewModel() {
