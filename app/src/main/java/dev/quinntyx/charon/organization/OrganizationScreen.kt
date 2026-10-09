@@ -41,12 +41,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import java.util.Locale
 import kotlinx.coroutines.launch
 
 private enum class OrganizationTab { FOLDERS, TAGS }
 
 private sealed interface NameEditor {
-    data class NewFolder(val initialName: String = "") : NameEditor
+    data class NewFolder(
+        val initialName: String = "",
+        val initialCurrencyCode: String = "USD",
+    ) : NameEditor
     data class RenameFolder(val folder: FolderAccount) : NameEditor
     data class NewTag(val initialName: String = "") : NameEditor
     data class RenameTag(val tag: TransactionTag) : NameEditor
@@ -176,10 +180,13 @@ fun OrganizationScreen(
         NameEditorDialog(
             editor = currentEditor,
             onDismiss = { editor = null },
-            onSave = { enteredName ->
+            onSave = { enteredName, enteredCurrency ->
                 scope.launch {
                     val result = when (currentEditor) {
-                        is NameEditor.NewFolder -> repository.createFolder(enteredName)
+                        is NameEditor.NewFolder -> repository.createFolder(
+                            enteredName,
+                            enteredCurrency,
+                        )
                         is NameEditor.RenameFolder -> repository.renameFolder(
                             currentEditor.folder.id,
                             enteredName,
@@ -310,8 +317,7 @@ private fun FolderRow(
     OrganizationCard(
         title = folder.name,
         details = buildList {
-            if (folder.balances.isEmpty()) add("No recorded balance")
-            folder.balances.sortedBy { it.currencyCode }.forEach { add(it.displayText()) }
+            add(folder.balance.displayText())
             if (folder.transactionCount > 0) add("${folder.transactionCount} transactions")
             if (folder.recurringRuleCount > 0) add("${folder.recurringRuleCount} recurring rules")
         },
@@ -386,7 +392,7 @@ private fun EmptyState(title: String, body: String) {
 private fun NameEditorDialog(
     editor: NameEditor,
     onDismiss: () -> Unit,
-    onSave: (String) -> Unit,
+    onSave: (String, String) -> Unit,
 ) {
     val initialName = when (editor) {
         is NameEditor.NewFolder -> editor.initialName
@@ -401,20 +407,39 @@ private fun NameEditorDialog(
         is NameEditor.RenameTag -> "Rename tag"
     }
     var name by remember(editor) { mutableStateOf(initialName) }
+    var currencyCode by remember(editor) {
+        mutableStateOf((editor as? NameEditor.NewFolder)?.initialCurrencyCode.orEmpty())
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("Name") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (editor is NameEditor.NewFolder) {
+                    OutlinedTextField(
+                        value = currencyCode,
+                        onValueChange = { currencyCode = it.uppercase(Locale.ROOT).take(3) },
+                        label = { Text("ISO currency code") },
+                        supportingText = { Text("An account keeps one currency separate.") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
         },
         confirmButton = {
-            TextButton(onClick = { onSave(name) }, enabled = name.isNotBlank()) { Text("Save") }
+            TextButton(
+                onClick = { onSave(name, currencyCode) },
+                enabled = name.isNotBlank() &&
+                    (editor !is NameEditor.NewFolder || currencyCode.length == 3),
+            ) { Text("Save") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
@@ -430,7 +455,8 @@ fun FolderSelector(
     SelectorField(
         label = "Folder",
         emptyText = "No active folders available",
-        choices = folders.filterNot { it.isArchived }.map { it.id to it.name },
+        choices = folders.filterNot { it.isArchived }
+            .map { it.id to "${it.name} (${it.currencyCode})" },
         selectedKey = selectedId,
         onSelected = onSelected,
         modifier = modifier,
@@ -502,7 +528,8 @@ private fun <T> SelectorField(
 
 private fun OrganizationFailure.userMessage(): String = when (this) {
     is OrganizationFailure.InvalidName -> message
-    is OrganizationFailure.NameAlreadyExists -> "A folder or tag named $name already exists"
+    is OrganizationFailure.InvalidCurrency -> message
+    is OrganizationFailure.NameAlreadyExists -> "That name is already in use"
     OrganizationFailure.NotFound -> "This item no longer exists"
     is OrganizationFailure.DeletionBlocked -> buildString {
         append("Cannot delete: archive it to preserve")

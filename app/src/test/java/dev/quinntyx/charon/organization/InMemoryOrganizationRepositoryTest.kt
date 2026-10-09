@@ -3,31 +3,33 @@ package dev.quinntyx.charon.organization
 import java.util.Locale
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
 class InMemoryOrganizationRepositoryTest {
     @Test
-    fun createNormalizesNamesAndRejectsCaseInsensitiveDuplicates() = runTest {
-        val ids = ArrayDeque(listOf("folder-1", "tag-1"))
+    fun createNormalizesNamesAndKeepsAccountCurrenciesSeparate() = runTest {
+        val ids = ArrayDeque(listOf(1L, 2L, 3L))
         val repository = InMemoryOrganizationRepository(newId = { ids.removeFirst() })
 
-        assertSuccess(repository.createFolder("  Daily   checking "))
-        val duplicate = repository.createFolder("daily CHECKING")
+        assertSuccess(repository.createFolder("  Daily   checking ", " usd "))
+        val duplicate = repository.createFolder("daily CHECKING", "USD")
         assertFailure<OrganizationFailure.NameAlreadyExists>(duplicate)
 
+        // The same display name in another currency is a separate account, never a mixed total.
+        assertSuccess(repository.createFolder("Daily checking", "EUR"))
         // Folder and tag names intentionally have separate namespaces and meanings.
         assertSuccess(repository.createTag("Daily checking"))
-        assertEquals("Daily checking", repository.snapshot.value.activeFolders.single().name)
+
+        assertEquals(listOf("EUR", "USD"), repository.snapshot.value.activeFolders.map { it.currencyCode })
         assertEquals("Daily checking", repository.snapshot.value.activeTags.single().name)
     }
 
     @Test
     fun archiveRemovesItemsFromActiveSelectorListsAndRestoreReturnsThem() = runTest {
-        val folder = FolderAccount(FolderId("cash"), "Cash")
-        val tag = TransactionTag(TagId("food"), "Food")
+        val folder = FolderAccount(FolderId(1), "Cash", "USD")
+        val tag = TransactionTag(TagId(1), "Food")
         val repository = InMemoryOrganizationRepository(listOf(folder), listOf(tag))
 
         assertSuccess(repository.setFolderArchived(folder.id, true))
@@ -44,14 +46,12 @@ class InMemoryOrganizationRepositoryTest {
     }
 
     @Test
-    fun folderDeletionIsBlockedByReferencesOrAnyNonZeroCurrencyBalance() = runTest {
+    fun folderDeletionIsBlockedByReferencesOrNonZeroBalance() = runTest {
         val folder = FolderAccount(
-            id = FolderId("checking"),
+            id = FolderId(1),
             name = "Checking",
-            balances = listOf(
-                CurrencyBalance("EUR", 0),
-                CurrencyBalance("USD", 12_345),
-            ),
+            currencyCode = "USD",
+            balanceMinorUnits = 12_345,
             transactionCount = 4,
             recurringRuleCount = 1,
         )
@@ -69,7 +69,7 @@ class InMemoryOrganizationRepositoryTest {
     @Test
     fun tagDeletionIsBlockedByHistoricalOrRecurringReferences() = runTest {
         val tag = TransactionTag(
-            id = TagId("rent"),
+            id = TagId(1),
             name = "Rent",
             transactionCount = 12,
             recurringRuleCount = 1,
@@ -88,12 +88,13 @@ class InMemoryOrganizationRepositoryTest {
     @Test
     fun unusedItemsCanBePermanentlyDeletedEvenWhenArchived() = runTest {
         val folder = FolderAccount(
-            FolderId("empty-folder"),
-            "Old account",
+            id = FolderId(1),
+            name = "Old account",
+            currencyCode = "USD",
             isArchived = true,
-            balances = listOf(CurrencyBalance("USD", 0)),
+            balanceMinorUnits = 0,
         )
-        val tag = TransactionTag(TagId("empty-tag"), "Old tag", isArchived = true)
+        val tag = TransactionTag(TagId(1), "Old tag", isArchived = true)
         val repository = InMemoryOrganizationRepository(listOf(folder), listOf(tag))
 
         assertSuccess(repository.deleteFolder(folder.id))
@@ -104,11 +105,12 @@ class InMemoryOrganizationRepositoryTest {
     }
 
     @Test
-    fun renamePreservesIdentityUsageAndBalances() = runTest {
+    fun renamePreservesIdentityCurrencyUsageAndBalance() = runTest {
         val folder = FolderAccount(
-            id = FolderId("wallet"),
+            id = FolderId(1),
             name = "Wallet",
-            balances = listOf(CurrencyBalance("JPY", -250)),
+            currencyCode = "JPY",
+            balanceMinorUnits = -250,
             transactionCount = 3,
         )
         val repository = InMemoryOrganizationRepository(initialFolders = listOf(folder))
@@ -119,34 +121,41 @@ class InMemoryOrganizationRepositoryTest {
     }
 
     @Test
-    fun invalidNamesAndMissingIdsDoNotMutateState() = runTest {
+    fun invalidInputsAndMissingIdsDoNotMutateState() = runTest {
         val repository = InMemoryOrganizationRepository()
 
-        assertFailure<OrganizationFailure.InvalidName>(repository.createFolder("   \n "))
-        assertFailure<OrganizationFailure.InvalidName>(repository.createTag("x".repeat(81)))
-        assertFailure<OrganizationFailure.NotFound>(
-            repository.renameFolder(FolderId("missing"), "Valid"),
+        assertFailure<OrganizationFailure.InvalidName>(repository.createFolder("   \n ", "USD"))
+        assertFailure<OrganizationFailure.InvalidName>(repository.createTag("x".repeat(121)))
+        assertFailure<OrganizationFailure.InvalidCurrency>(
+            repository.createFolder("Cash", "ZZZ"),
         )
-        assertFalse(repository.snapshot.value.folders.isNotEmpty())
-        assertFalse(repository.snapshot.value.tags.isNotEmpty())
+        assertFailure<OrganizationFailure.NotFound>(
+            repository.renameFolder(FolderId(999), "Valid"),
+        )
+        assertTrue(repository.snapshot.value.folders.isEmpty())
+        assertTrue(repository.snapshot.value.tags.isEmpty())
     }
 
     @Test
-    fun activeAndArchivedListsAreSortedWithoutMixingTheirStates() {
+    fun activeAndArchivedListsAreSortedByNameThenCurrency() {
         val snapshot = OrganizationSnapshot(
             folders = listOf(
-                FolderAccount(FolderId("z"), "zebra"),
-                FolderAccount(FolderId("a"), "Alpha"),
-                FolderAccount(FolderId("m"), "middle", isArchived = true),
+                FolderAccount(FolderId(1), "zebra", "USD"),
+                FolderAccount(FolderId(2), "Alpha", "USD"),
+                FolderAccount(FolderId(3), "Alpha", "EUR"),
+                FolderAccount(FolderId(4), "middle", "USD", isArchived = true),
             ),
             tags = listOf(
-                TransactionTag(TagId("b"), "Bills"),
-                TransactionTag(TagId("a"), "auto"),
-                TransactionTag(TagId("x"), "Archived", isArchived = true),
+                TransactionTag(TagId(1), "Bills"),
+                TransactionTag(TagId(2), "auto"),
+                TransactionTag(TagId(3), "Archived", isArchived = true),
             ),
         )
 
-        assertEquals(listOf("Alpha", "zebra"), snapshot.activeFolders.map { it.name })
+        assertEquals(
+            listOf("Alpha EUR", "Alpha USD", "zebra USD"),
+            snapshot.activeFolders.map { "${it.name} ${it.currencyCode}" },
+        )
         assertEquals(listOf("middle"), snapshot.archivedFolders.map { it.name })
         assertEquals(listOf("auto", "Bills"), snapshot.activeTags.map { it.name })
         assertEquals(listOf("Archived"), snapshot.archivedTags.map { it.name })
@@ -164,12 +173,8 @@ class InMemoryOrganizationRepositoryTest {
     }
 
     @Test(expected = IllegalArgumentException::class)
-    fun folderRejectsDuplicateCurrencyBalances() {
-        FolderAccount(
-            id = FolderId("bad"),
-            name = "Bad data",
-            balances = listOf(CurrencyBalance("USD", 1), CurrencyBalance("USD", 2)),
-        )
+    fun folderRejectsNonUppercaseCurrencyCode() {
+        FolderAccount(FolderId(1), "Bad data", "usd")
     }
 
     private fun assertSuccess(result: OrganizationResult<*>) {

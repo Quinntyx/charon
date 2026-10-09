@@ -1,7 +1,6 @@
 package dev.quinntyx.charon.organization
 
 import java.util.Locale
-import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -15,13 +14,19 @@ import kotlinx.coroutines.sync.withLock
 class InMemoryOrganizationRepository(
     initialFolders: List<FolderAccount> = emptyList(),
     initialTags: List<TransactionTag> = emptyList(),
-    private val newId: () -> String = { UUID.randomUUID().toString() },
+    newId: (() -> Long)? = null,
 ) : OrganizationRepository {
     private val mutex = Mutex()
+    private val generateId = newId ?: incrementingIdGenerator(
+        start = maxOf(
+            initialFolders.maxOfOrNull { it.id.value } ?: 0,
+            initialTags.maxOfOrNull { it.id.value } ?: 0,
+        ) + 1,
+    )
     private val mutableSnapshot = MutableStateFlow(
         OrganizationSnapshot(
-            folders = initialFolders.map { it.normalizedCopy() },
-            tags = initialTags.map { it.normalizedCopy() },
+            folders = initialFolders.toList(),
+            tags = initialTags.toList(),
         ),
     )
 
@@ -34,22 +39,35 @@ class InMemoryOrganizationRepository(
         require(initialTags.map { it.id }.distinct().size == initialTags.size) {
             "Tag ids must be unique"
         }
-        require(initialFolders.haveDistinctFolderNames()) { "Folder names must be unique" }
+        require(initialFolders.haveDistinctFolderNamesPerCurrency()) {
+            "Folder name and currency pairs must be unique"
+        }
         require(initialTags.haveDistinctTagNames()) { "Tag names must be unique" }
     }
 
-    override suspend fun createFolder(name: String): OrganizationResult<FolderId> = mutex.withLock {
-        val normalized = when (val result = normalizeOrganizationName(name)) {
+    override suspend fun createFolder(
+        name: String,
+        currencyCode: String,
+    ): OrganizationResult<FolderId> = mutex.withLock {
+        val normalizedName = when (val result = normalizeOrganizationName(name)) {
+            is OrganizationResult.Success -> result.value
+            is OrganizationResult.Failure -> return@withLock result
+        }
+        val normalizedCurrency = when (val result = normalizeCurrencyCode(currencyCode)) {
             is OrganizationResult.Success -> result.value
             is OrganizationResult.Failure -> return@withLock result
         }
         val current = mutableSnapshot.value
-        if (current.folders.hasFolderName(normalized)) {
-            return@withLock duplicateName(normalized)
+        if (current.folders.hasFolderName(normalizedName, normalizedCurrency)) {
+            return@withLock duplicateName(normalizedName)
         }
-        val id = FolderId(newId())
+        val id = FolderId(generateId())
         mutableSnapshot.value = current.copy(
-            folders = current.folders + FolderAccount(id = id, name = normalized),
+            folders = current.folders + FolderAccount(
+                id = id,
+                name = normalizedName,
+                currencyCode = normalizedCurrency,
+            ),
         )
         OrganizationResult.Success(id)
     }
@@ -63,8 +81,8 @@ class InMemoryOrganizationRepository(
             is OrganizationResult.Failure -> return@withLock result
         }
         val current = mutableSnapshot.value
-        if (current.folders.none { it.id == id }) return@withLock notFound()
-        if (current.folders.hasFolderName(normalized, excluding = id)) {
+        val existing = current.folders.firstOrNull { it.id == id } ?: return@withLock notFound()
+        if (current.folders.hasFolderName(normalized, existing.currencyCode, excluding = id)) {
             return@withLock duplicateName(normalized)
         }
         mutableSnapshot.value = current.copy(
@@ -92,7 +110,11 @@ class InMemoryOrganizationRepository(
     override suspend fun deleteFolder(id: FolderId): OrganizationResult<Unit> = mutex.withLock {
         val current = mutableSnapshot.value
         val folder = current.folders.firstOrNull { it.id == id } ?: return@withLock notFound()
-        val nonZeroBalances = folder.balances.filter { it.minorUnits != 0L }
+        val nonZeroBalances = if (folder.balanceMinorUnits == 0L) {
+            emptyList()
+        } else {
+            listOf(folder.balance)
+        }
         if (
             folder.transactionCount > 0 ||
             folder.recurringRuleCount > 0 ||
@@ -117,7 +139,7 @@ class InMemoryOrganizationRepository(
         }
         val current = mutableSnapshot.value
         if (current.tags.hasTagName(normalized)) return@withLock duplicateName(normalized)
-        val id = TagId(newId())
+        val id = TagId(generateId())
         mutableSnapshot.value = current.copy(
             tags = current.tags + TransactionTag(id = id, name = normalized),
         )
@@ -173,20 +195,26 @@ class InMemoryOrganizationRepository(
     }
 }
 
-private fun FolderAccount.normalizedCopy(): FolderAccount = copy(
-    balances = balances.sortedBy { it.currencyCode },
-)
+private fun incrementingIdGenerator(start: Long): () -> Long {
+    var nextId = start
+    return { nextId++ }
+}
 
-private fun TransactionTag.normalizedCopy(): TransactionTag = copy()
-
-private fun List<FolderAccount>.hasFolderName(name: String, excluding: FolderId? = null): Boolean =
-    any { it.id != excluding && it.name.equals(name, ignoreCase = true) }
+private fun List<FolderAccount>.hasFolderName(
+    name: String,
+    currencyCode: String,
+    excluding: FolderId? = null,
+): Boolean = any {
+    it.id != excluding &&
+        it.currencyCode == currencyCode &&
+        it.name.equals(name, ignoreCase = true)
+}
 
 private fun List<TransactionTag>.hasTagName(name: String, excluding: TagId? = null): Boolean =
     any { it.id != excluding && it.name.equals(name, ignoreCase = true) }
 
-private fun List<FolderAccount>.haveDistinctFolderNames(): Boolean =
-    map { it.name.lowercase(Locale.ROOT) }.distinct().size == size
+private fun List<FolderAccount>.haveDistinctFolderNamesPerCurrency(): Boolean =
+    map { it.name.lowercase(Locale.ROOT) to it.currencyCode }.distinct().size == size
 
 private fun List<TransactionTag>.haveDistinctTagNames(): Boolean =
     map { it.name.lowercase(Locale.ROOT) }.distinct().size == size

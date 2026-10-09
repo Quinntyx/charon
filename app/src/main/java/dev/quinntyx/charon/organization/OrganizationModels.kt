@@ -3,19 +3,19 @@ package dev.quinntyx.charon.organization
 import java.util.Currency
 import java.util.Locale
 
-private const val MAX_ORGANIZATION_NAME_LENGTH = 80
+private const val MAX_ORGANIZATION_NAME_LENGTH = 120
 
 @JvmInline
-value class FolderId(val value: String) {
+value class FolderId(val value: Long) {
     init {
-        require(value.isNotBlank()) { "Folder id cannot be blank" }
+        require(value > 0) { "Folder id must be positive" }
     }
 }
 
 @JvmInline
-value class TagId(val value: String) {
+value class TagId(val value: Long) {
     init {
-        require(value.isNotBlank()) { "Tag id cannot be blank" }
+        require(value > 0) { "Tag id must be positive" }
     }
 }
 
@@ -33,19 +33,23 @@ data class CurrencyBalance(
 data class FolderAccount(
     val id: FolderId,
     val name: String,
+    val currencyCode: String,
     val isArchived: Boolean = false,
-    val balances: List<CurrencyBalance> = emptyList(),
+    val balanceMinorUnits: Long = 0,
     val transactionCount: Int = 0,
     val recurringRuleCount: Int = 0,
 ) {
     init {
         require(name.isNotBlank()) { "Folder name cannot be blank" }
+        require(currencyCode.matches(Regex("[A-Z]{3}"))) {
+            "Currency codes must be three uppercase letters"
+        }
         require(transactionCount >= 0) { "Transaction count cannot be negative" }
         require(recurringRuleCount >= 0) { "Recurring-rule count cannot be negative" }
-        require(balances.map { it.currencyCode }.distinct().size == balances.size) {
-            "A folder can have only one balance per currency"
-        }
     }
+
+    val balance: CurrencyBalance
+        get() = CurrencyBalance(currencyCode, balanceMinorUnits)
 }
 
 data class TransactionTag(
@@ -81,6 +85,7 @@ data class OrganizationSnapshot(
 
 sealed interface OrganizationFailure {
     data class InvalidName(val message: String) : OrganizationFailure
+    data class InvalidCurrency(val message: String) : OrganizationFailure
     data class NameAlreadyExists(val name: String) : OrganizationFailure
     data object NotFound : OrganizationFailure
 
@@ -113,6 +118,22 @@ internal fun normalizeOrganizationName(rawName: String): OrganizationResult<Stri
     }
 }
 
+internal fun normalizeCurrencyCode(rawCode: String): OrganizationResult<String> {
+    val normalized = rawCode.trim().uppercase(Locale.ROOT)
+    if (!normalized.matches(Regex("[A-Z]{3}"))) {
+        return OrganizationResult.Failure(
+            OrganizationFailure.InvalidCurrency("Currency must be a three-letter ISO 4217 code"),
+        )
+    }
+    return try {
+        OrganizationResult.Success(Currency.getInstance(normalized).currencyCode)
+    } catch (_: IllegalArgumentException) {
+        OrganizationResult.Failure(
+            OrganizationFailure.InvalidCurrency("Unknown ISO 4217 currency code '$normalized'"),
+        )
+    }
+}
+
 fun CurrencyBalance.displayText(locale: Locale = Locale.getDefault()): String {
     val fractionDigits = runCatching {
         Currency.getInstance(currencyCode).defaultFractionDigits
@@ -129,7 +150,10 @@ fun CurrencyBalance.displayText(locale: Locale = Locale.getDefault()): String {
 }
 
 private fun List<FolderAccount>.sortedFolderNames(): List<FolderAccount> =
-    sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+    sortedWith(
+        compareBy<FolderAccount>(String.CASE_INSENSITIVE_ORDER) { it.name }
+            .thenBy { it.currencyCode },
+    )
 
 private fun List<TransactionTag>.sortedTagNames(): List<TransactionTag> =
     sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })

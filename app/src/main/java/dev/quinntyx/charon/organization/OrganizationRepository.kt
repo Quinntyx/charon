@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 interface OrganizationRepository {
     val snapshot: StateFlow<OrganizationSnapshot>
 
-    suspend fun createFolder(name: String): OrganizationResult<FolderId>
+    suspend fun createFolder(name: String, currencyCode: String): OrganizationResult<FolderId>
     suspend fun renameFolder(id: FolderId, name: String): OrganizationResult<Unit>
     suspend fun setFolderArchived(id: FolderId, archived: Boolean): OrganizationResult<Unit>
     suspend fun deleteFolder(id: FolderId): OrganizationResult<Unit>
