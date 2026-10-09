@@ -69,6 +69,7 @@ fun ReceiptCaptureScreen(
     val store = remember(context.applicationContext) {
         ReceiptImageStore(File(context.applicationContext.filesDir, "receipt-images"))
     }
+    val captureCompletion = remember(store) { ReceiptCaptureCompletion(store) }
     var cameraPermissionGranted by remember {
         mutableStateOf(context.hasCameraPermission())
     }
@@ -187,12 +188,8 @@ fun ReceiptCaptureScreen(
                             ContextCompat.getMainExecutor(context),
                             object : ImageCapture.OnImageSavedCallback {
                                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                                    scope.launch {
-                                        runCatching {
-                                            withContext(Dispatchers.IO) {
-                                                store.commitCameraCapture(pending)
-                                            }
-                                        }.onSuccess { image ->
+                                    captureCompletion.commit(pending) { result ->
+                                        result.onSuccess { image ->
                                             busy = false
                                             message = "Saved ${image.file.name}"
                                             onReceiptReady(image)
@@ -204,11 +201,10 @@ fun ReceiptCaptureScreen(
                                 }
 
                                 override fun onError(exception: ImageCaptureException) {
-                                    scope.launch(Dispatchers.IO) {
-                                        store.discardCameraCapture(pending)
+                                    captureCompletion.discard(pending) {
+                                        busy = false
+                                        message = exception.userMessage("Camera capture failed")
                                     }
-                                    busy = false
-                                    message = exception.userMessage("Camera capture failed")
                                 }
                             },
                         )
