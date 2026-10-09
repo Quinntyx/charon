@@ -43,7 +43,7 @@ class RecurrenceService(
             loggingPolicy = request.loggingPolicy,
             amountRevisions = listOf(AmountRevision(request.startsOn, request.amountMinorUnits)),
         )
-        repository.savePayment(payment)
+        repository.inTransaction { savePayment(payment) }
         return payment
     }
 
@@ -67,9 +67,9 @@ class RecurrenceService(
     suspend fun pendingOccurrences(
         fromInclusive: LocalDate,
         toInclusive: LocalDate,
-    ): List<ScheduledOccurrence> {
-        val loggedKeys = repository.getLoggedOccurrences().mapTo(mutableSetOf()) { it.occurrence.key }
-        return repository.getPayments()
+    ): List<ScheduledOccurrence> = repository.inTransaction {
+        val loggedKeys = getLoggedOccurrences().mapTo(mutableSetOf()) { it.occurrence.key }
+        getPayments()
             .flatMap { payment -> scheduledOccurrences(payment, fromInclusive, toInclusive) }
             .filterNot { it.key in loggedKeys }
             .sortedWith(compareBy<ScheduledOccurrence> { it.key.dueDate }.thenBy { it.title })
@@ -86,32 +86,38 @@ class RecurrenceService(
         loggedOn: LocalDate = today(),
     ): Boolean {
         require(dueDate <= loggedOn) { "Future occurrences cannot be logged early" }
-        val payment = requirePayment(paymentId)
-        require(isOccurrenceDate(payment, dueDate)) { "$dueDate is not an occurrence of ${payment.title}" }
-        require(!payment.isSuppressed(dueDate)) { "$dueDate is suppressed" }
-        return repository.insertLoggedOccurrenceIfAbsent(
-            LoggedOccurrence(
-                occurrence = payment.toOccurrence(dueDate),
-                loggedAtEpochMillis = loggedAtEpochMillis,
-                origin = LoggingOrigin.MANUAL_CONFIRMATION,
-            ),
-        )
+        return repository.inTransaction {
+            val payment = requireNotNull(getPayment(paymentId)) {
+                "Unknown recurring payment: $paymentId"
+            }
+            require(isOccurrenceDate(payment, dueDate)) {
+                "$dueDate is not an occurrence of ${payment.title}"
+            }
+            require(!payment.isSuppressed(dueDate)) { "$dueDate is suppressed" }
+            insertLoggedOccurrenceIfAbsent(
+                LoggedOccurrence(
+                    occurrence = payment.toOccurrence(dueDate),
+                    loggedAtEpochMillis = loggedAtEpochMillis,
+                    origin = LoggingOrigin.MANUAL_CONFIRMATION,
+                ),
+            )
+        }
     }
 
     /**
      * Logs every eligible automatic occurrence through [asOf]. This is catch-up, not an exact-time
      * promise: WorkManager may run after the due date. Each occurrence is inserted atomically once.
      */
-    suspend fun catchUp(asOf: LocalDate = today()): CatchUpResult {
+    suspend fun catchUp(asOf: LocalDate = today()): CatchUpResult = repository.inTransaction {
         var eligible = 0
         var inserted = 0
-        repository.getPayments()
+        getPayments()
             .asSequence()
             .filter { it.loggingPolicy == LoggingPolicy.AUTOMATIC_CATCH_UP }
             .forEach { payment ->
                 scheduledOccurrences(payment, payment.startsOn, asOf).forEach { occurrence ->
                     eligible++
-                    val wasInserted = repository.insertLoggedOccurrenceIfAbsent(
+                    val wasInserted = insertLoggedOccurrenceIfAbsent(
                         LoggedOccurrence(
                             occurrence = occurrence,
                             loggedAtEpochMillis = clock.millis(),
@@ -121,7 +127,7 @@ class RecurrenceService(
                     if (wasInserted) inserted++
                 }
             }
-        return CatchUpResult(eligible, inserted)
+        CatchUpResult(eligible, inserted)
     }
 
     fun scheduledOccurrences(
@@ -147,11 +153,11 @@ class RecurrenceService(
     fun today(): LocalDate = LocalDate.now(clock)
 
     private suspend fun mutate(id: String, transform: (RecurringPayment) -> RecurringPayment) {
-        repository.savePayment(transform(requirePayment(id)))
+        repository.inTransaction {
+            val current = requireNotNull(getPayment(id)) { "Unknown recurring payment: $id" }
+            savePayment(transform(current))
+        }
     }
-
-    private suspend fun requirePayment(id: String): RecurringPayment =
-        requireNotNull(repository.getPayment(id)) { "Unknown recurring payment: $id" }
 
     private fun isOccurrenceDate(payment: RecurringPayment, date: LocalDate): Boolean =
         occurrenceDatesBetween(payment.rule, payment.startsOn, date, date).singleOrNull() == date
