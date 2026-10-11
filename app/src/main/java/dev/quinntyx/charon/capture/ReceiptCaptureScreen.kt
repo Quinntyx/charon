@@ -38,7 +38,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -52,9 +51,6 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
 
 /** Minimal receipt acquisition surface. OCR and transaction editing intentionally live elsewhere. */
@@ -65,7 +61,6 @@ fun ReceiptCaptureScreen(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val scope = rememberCoroutineScope()
     val store = remember(context.applicationContext) {
         ReceiptImageStore(File(context.applicationContext.filesDir, "receipt-images"))
     }
@@ -91,15 +86,12 @@ fun ReceiptCaptureScreen(
         if (uri != null) {
             busy = true
             message = null
-            scope.launch {
-                runCatching {
-                    withContext(Dispatchers.IO) {
-                        val resolver = context.contentResolver
-                        resolver.openInputStream(uri)?.use { input ->
-                            store.importImage(input, resolver.getType(uri))
-                        } ?: error("The selected image could not be opened")
-                    }
-                }.onSuccess { image ->
+            val resolver = context.applicationContext.contentResolver
+            captureCompletion.importImage(
+                openInput = { resolver.openInputStream(uri) },
+                resolveMimeType = { resolver.getType(uri) },
+            ) { result ->
+                result.onSuccess { image ->
                     busy = false
                     message = "Imported ${image.file.name}"
                     onReceiptReady(image)

@@ -1,5 +1,6 @@
 package dev.quinntyx.charon.capture
 
+import java.io.ByteArrayInputStream
 import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -9,6 +10,7 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -62,6 +64,55 @@ class ReceiptCaptureCompletionTest {
         assertTrue(checkNotNull(result).exceptionOrNull() is IOException)
         assertFalse(pending.stagingFile.exists())
         assertFalse(root.resolve("empty.jpg").exists())
+        workerScope.cancel()
+    }
+
+    @Test
+    fun importFinishesAndPublishesAfterScreenScopeIsCancelled() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val workerScope = CoroutineScope(SupervisorJob() + dispatcher)
+        val screenScope = CoroutineScope(Job() + dispatcher)
+        val root = temporaryFolder.newFolder("import-after-navigation")
+        val store = ReceiptImageStore(root, idFactory = { "imported" })
+        val completion = ReceiptCaptureCompletion(store, workerScope, dispatcher)
+        val bytes = byteArrayOf(9, 8, 7)
+        var result: Result<ReceiptImage>? = null
+
+        val completionJob = completion.importImage(
+            openInput = { ByteArrayInputStream(bytes) },
+            resolveMimeType = { "image/png" },
+        ) { result = it }
+        screenScope.cancel() // Simulates switching away while provider I/O is queued.
+        advanceUntilIdle()
+
+        assertTrue(completionJob.isCompleted)
+        val image = checkNotNull(result).getOrThrow()
+        assertEquals(ReceiptImageSource.IMPORT, image.source)
+        assertEquals("imported.png", image.file.name)
+        assertArrayEquals(bytes, image.file.readBytes())
+        assertFalse(root.listFiles().orEmpty().any { it.name.endsWith(".part") })
+        workerScope.cancel()
+    }
+
+    @Test
+    fun unavailableImportReportsFailureAfterScreenScopeIsCancelled() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val workerScope = CoroutineScope(SupervisorJob() + dispatcher)
+        val screenScope = CoroutineScope(Job() + dispatcher)
+        val root = temporaryFolder.newFolder("unavailable-import-after-navigation")
+        val store = ReceiptImageStore(root, idFactory = { "unavailable" })
+        val completion = ReceiptCaptureCompletion(store, workerScope, dispatcher)
+        var result: Result<ReceiptImage>? = null
+
+        completion.importImage(
+            openInput = { null },
+            resolveMimeType = { "image/jpeg" },
+        ) { result = it }
+        screenScope.cancel()
+        advanceUntilIdle()
+
+        assertTrue(checkNotNull(result).exceptionOrNull() is IOException)
+        assertTrue(root.listFiles().orEmpty().isEmpty())
         workerScope.cancel()
     }
 

@@ -1,5 +1,7 @@
 package dev.quinntyx.charon.capture
 
+import java.io.IOException
+import java.io.InputStream
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -9,11 +11,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Finishes camera file operations independently of the capture screen's composition lifetime.
+ * Finishes receipt file operations independently of the capture screen's composition lifetime.
  *
- * CameraX can report success or failure after navigation disposes the screen. Work therefore runs
- * in a process-lifetime scope rather than a rememberCoroutineScope, while callbacks return to the
- * main dispatcher for Compose state and downstream navigation.
+ * CameraX and document-provider I/O can finish after navigation disposes the screen. Work therefore
+ * runs in a process-lifetime scope rather than a rememberCoroutineScope, while callbacks return to
+ * the main dispatcher for Compose state and downstream navigation.
  */
 internal class ReceiptCaptureCompletion(
     private val store: ReceiptImageStore,
@@ -25,6 +27,19 @@ internal class ReceiptCaptureCompletion(
         onComplete: (Result<ReceiptImage>) -> Unit,
     ): Job = workerScope.launch {
         val result = runCatching { store.commitCameraCapture(pending) }
+        withContext(callbackDispatcher) { onComplete(result) }
+    }
+
+    fun importImage(
+        openInput: () -> InputStream?,
+        resolveMimeType: () -> String?,
+        onComplete: (Result<ReceiptImage>) -> Unit,
+    ): Job = workerScope.launch {
+        val result = runCatching {
+            openInput()?.use { input ->
+                store.importImage(input, resolveMimeType())
+            } ?: throw IOException("The selected image could not be opened")
+        }
         withContext(callbackDispatcher) { onComplete(result) }
     }
 
