@@ -3,6 +3,7 @@ package dev.quinntyx.charon.capture
 import java.io.ByteArrayInputStream
 import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -17,6 +18,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ReceiptCaptureCompletionTest {
     @get:Rule
     val temporaryFolder = TemporaryFolder()
