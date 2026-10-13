@@ -70,7 +70,7 @@ class RoomAppIntegrationTest {
         assertEquals(-125_000L, ledger.getAccountBalance(wallet.id))
 
         val dashboard = RoomDashboardRepository(ledger, recurrence, clock)
-            .observeDashboard(DashboardPeriod.DAYS_30)
+            .observeDashboard(DashboardPeriod.THIRTY_DAYS)
             .first()
         assertEquals(1, dashboard.recentTransactions.size)
         assertEquals(125_000L, dashboard.currencies.single().expenseTotalMinor)
