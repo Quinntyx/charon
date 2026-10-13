@@ -11,7 +11,7 @@ import dev.quinntyx.charon.entry.RoomTransactionEntryAdapter
 import dev.quinntyx.charon.recurrence.RecurrenceService
 
 class CharonApplication : Application() {
-    internal val database: CharonDatabase by lazy {
+    private val database: CharonDatabase by lazy {
         Room.databaseBuilder(this, CharonDatabase::class.java, "charon.db").build()
     }
 
