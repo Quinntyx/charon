@@ -65,6 +65,7 @@ import java.util.Locale
 fun DashboardRoute(
     viewModel: DashboardViewModel,
     onAddTransaction: () -> Unit,
+    onEditTransaction: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -76,6 +77,7 @@ fun DashboardRoute(
         onTransactionSelected = viewModel::selectTransaction,
         onDismissTransaction = viewModel::dismissTransaction,
         onAddTransaction = onAddTransaction,
+        onEditTransaction = onEditTransaction,
         modifier = modifier,
     )
 }
@@ -90,6 +92,7 @@ fun DashboardScreen(
     onTransactionSelected: (String) -> Unit,
     onDismissTransaction: () -> Unit,
     onAddTransaction: () -> Unit,
+    onEditTransaction: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Scaffold(
@@ -150,6 +153,9 @@ fun DashboardScreen(
                     TagBreakdownCard(state.selectedOverview)
                 }
                 item {
+                    FolderBreakdownCard(state.selectedOverview)
+                }
+                item {
                     UpcomingPaymentsCard(state.upcomingPayments)
                 }
                 item {
@@ -179,6 +185,7 @@ fun DashboardScreen(
         TransactionDialog(
             transaction = transaction,
             onDismiss = onDismissTransaction,
+            onEdit = { onEditTransaction(transaction.id) },
         )
     }
 }
@@ -485,6 +492,32 @@ private fun TagBreakdownCard(overview: CurrencyOverview?) {
 }
 
 @Composable
+private fun FolderBreakdownCard(overview: CurrencyOverview?) {
+    DashboardCard {
+        SectionHeading("Spending by folder", includePadding = false)
+        val folders = overview?.folderSpending.orEmpty().filter { it.expenseMinor > 0 }
+        if (overview == null || folders.isEmpty()) {
+            Text("No folder expenses for this window.")
+            return@DashboardCard
+        }
+        val largest = folders.maxOf { it.expenseMinor }.coerceAtLeast(1L)
+        folders.sortedByDescending { it.expenseMinor }.forEach { folder ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(folder.folderName, modifier = Modifier.weight(1f))
+                Text(MoneyFormatter.format(folder.expenseMinor, overview.currencyCode))
+            }
+            LinearProgressIndicator(
+                progress = { folder.expenseMinor.toFloat() / largest.toFloat() },
+                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+            )
+        }
+    }
+}
+
+@Composable
 private fun UpcomingPaymentsCard(payments: List<UpcomingPayment>) {
     DashboardCard {
         SectionHeading("Upcoming payments", includePadding = false)
@@ -580,6 +613,7 @@ private fun TransactionRow(
 private fun TransactionDialog(
     transaction: DashboardTransaction,
     onDismiss: () -> Unit,
+    onEdit: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -614,6 +648,9 @@ private fun TransactionDialog(
             }
         },
         confirmButton = {
+            TextButton(onClick = onEdit) { Text("Edit") }
+        },
+        dismissButton = {
             TextButton(onClick = onDismiss) { Text("Close") }
         },
     )

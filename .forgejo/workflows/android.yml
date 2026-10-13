@@ -24,6 +24,15 @@ jobs:
           test "$(git rev-parse HEAD)" = '${{ github.sha }}'
           for report in \
             TEST-dev.quinntyx.charon.BootstrapTest.xml \
+            TEST-dev.quinntyx.charon.analytics.ExpenseAnalyticsTest.xml \
+            TEST-dev.quinntyx.charon.backup.BackupRestoreCoordinatorTest.xml \
+            TEST-dev.quinntyx.charon.backup.CharonBackupArchiveTest.xml \
+            TEST-dev.quinntyx.charon.dashboard.DashboardStateTest.xml \
+            TEST-dev.quinntyx.charon.dashboard.DashboardViewModelTest.xml \
+            TEST-dev.quinntyx.charon.dashboard.MoneyFormatterTest.xml \
+            TEST-dev.quinntyx.charon.data.local.RoomAppIntegrationTest.xml \
+            TEST-dev.quinntyx.charon.data.local.RoomLedgerRepositoryTest.xml \
+            TEST-dev.quinntyx.charon.entry.TransactionEntryValidatorTest.xml \
             TEST-dev.quinntyx.charon.receipt.ocr.ReceiptParserTest.xml \
             TEST-dev.quinntyx.charon.recurrence.RecurrenceAtomicityTest.xml \
             TEST-dev.quinntyx.charon.recurrence.RecurrenceRuleTest.xml \
@@ -33,4 +42,10 @@ jobs:
           done
           test -s app/build/reports/lint-results-debug.html
           test -s app/build/outputs/apk/debug/app-debug.apk
-          printf 'Verified exact-tip OCR/recurrence tests, lint report, and debug APK.\n'
+          printf 'Verified exact-tip test discovery, lint report, and debug APK.\n'
+      - name: Publish debug APK artifact
+        uses: https://data.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: charon-debug-apk-${{ github.sha }}
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

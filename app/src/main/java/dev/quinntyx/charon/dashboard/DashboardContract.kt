@@ -52,6 +52,7 @@ data class CurrencyOverview(
     val rollingExpenseAverageMinor: Long,
     val rollingAverageWindowDays: Int,
     val tagSpending: List<TagSpending>,
+    val folderSpending: List<FolderSpending> = emptyList(),
 )
 
 data class DailyActivity(
@@ -63,6 +64,12 @@ data class DailyActivity(
 data class TagSpending(
     val tagId: String,
     val tagName: String,
+    val expenseMinor: Long,
+)
+
+data class FolderSpending(
+    val folderId: String,
+    val folderName: String,
     val expenseMinor: Long,
 )
 
