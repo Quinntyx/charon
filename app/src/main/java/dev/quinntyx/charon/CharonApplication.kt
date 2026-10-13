@@ -11,27 +11,27 @@ import dev.quinntyx.charon.entry.RoomTransactionEntryAdapter
 import dev.quinntyx.charon.recurrence.RecurrenceService
 
 class CharonApplication : Application() {
-    val database: CharonDatabase by lazy {
+    internal val database: CharonDatabase by lazy {
         Room.databaseBuilder(this, CharonDatabase::class.java, "charon.db").build()
     }
 
-    val ledgerRepository: RoomLedgerRepository by lazy {
+    internal val ledgerRepository: RoomLedgerRepository by lazy {
         RoomLedgerRepository(database, System::currentTimeMillis)
     }
 
-    val recurrenceService: RecurrenceService by lazy {
+    internal val recurrenceService: RecurrenceService by lazy {
         RecurrenceService(RoomRecurrenceRepository(database))
     }
 
-    val dashboardRepository: RoomDashboardRepository by lazy {
+    internal val dashboardRepository: RoomDashboardRepository by lazy {
         RoomDashboardRepository(ledgerRepository, recurrenceService)
     }
 
-    val transactionEntryAdapter: RoomTransactionEntryAdapter by lazy {
+    internal val transactionEntryAdapter: RoomTransactionEntryAdapter by lazy {
         RoomTransactionEntryAdapter(ledgerRepository)
     }
 
-    val backupAdapter: RoomBackupAdapter by lazy {
+    internal val backupAdapter: RoomBackupAdapter by lazy {
         RoomBackupAdapter(database, contentResolver, filesDir, cacheDir)
     }
 }
