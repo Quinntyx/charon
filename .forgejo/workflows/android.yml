@@ -1,0 +1,65 @@
+name: Android checks
+on:
+  push:
+    branches: ['**']
+  pull_request:
+jobs:
+  android:
+    name: Unit tests, lint, and APK
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/cirruslabs/android-sdk:36
+      options: --volume charon-gradle-cache:/root/.gradle
+    steps:
+      - name: Checkout exact commit without Node
+        run: |
+          git init .
+          git remote add origin '${{ github.server_url }}/${{ github.repository }}.git'
+          git fetch --depth 1 origin '${{ github.sha }}'
+          git checkout --detach FETCH_HEAD
+      - name: Test, lint, and assemble
+        run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
+      - name: Verify exact tip, test discovery, and APK output
+        run: |
+          test "$(git rev-parse HEAD)" = '${{ github.sha }}'
+          for report in \
+            TEST-dev.quinntyx.charon.BootstrapTest.xml \
+            TEST-dev.quinntyx.charon.analytics.ExpenseAnalyticsTest.xml \
+            TEST-dev.quinntyx.charon.backup.BackupRestoreCoordinatorTest.xml \
+            TEST-dev.quinntyx.charon.backup.CharonBackupArchiveTest.xml \
+            TEST-dev.quinntyx.charon.dashboard.DashboardStateTest.xml \
+            TEST-dev.quinntyx.charon.dashboard.DashboardViewModelTest.xml \
+            TEST-dev.quinntyx.charon.dashboard.MoneyFormatterTest.xml \
+            TEST-dev.quinntyx.charon.data.local.RoomAppIntegrationTest.xml \
+            TEST-dev.quinntyx.charon.data.local.RoomLedgerRepositoryTest.xml \
+            TEST-dev.quinntyx.charon.entry.TransactionEntryValidatorTest.xml \
+            TEST-dev.quinntyx.charon.receipt.ocr.ReceiptParserTest.xml \
+            TEST-dev.quinntyx.charon.recurrence.RecurrenceAtomicityTest.xml \
+            TEST-dev.quinntyx.charon.recurrence.RecurrenceRuleTest.xml \
+            TEST-dev.quinntyx.charon.recurrence.RecurrenceServiceTest.xml
+          do
+            test -s "app/build/test-results/testDebugUnitTest/$report"
+          done
+          test -s app/build/reports/lint-results-debug.html
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          printf 'Verified exact-tip test discovery, lint report, and debug APK.\n'
+      - name: Prepare pinned artifact uploader
+        run: |
+          mkdir -p .ci-actions/upload-artifact
+          git -C .ci-actions/upload-artifact init .
+          git -C .ci-actions/upload-artifact remote add origin https://data.forgejo.org/forgejo/upload-artifact.git
+          git -C .ci-actions/upload-artifact fetch --depth 1 origin 16871d9e8cfcf27ff31822cac382bbb5450f1e1e
+          git -C .ci-actions/upload-artifact checkout --detach FETCH_HEAD
+          test "$(git -C .ci-actions/upload-artifact rev-parse HEAD)" = 16871d9e8cfcf27ff31822cac382bbb5450f1e1e
+          test -s .ci-actions/upload-artifact/dist/upload/index.js
+      - name: Publish debug APK artifact
+        uses: docker://node:20-bookworm-slim
+        env:
+          INPUT_NAME: charon-debug-apk-${{ github.sha }}
+          INPUT_PATH: app/build/outputs/apk/debug/app-debug.apk
+          INPUT_IF-NO-FILES-FOUND: error
+          INPUT_RETENTION-DAYS: '30'
+          INPUT_COMPRESSION-LEVEL: '6'
+          INPUT_OVERWRITE: 'false'
+        with:
+          args: .ci-actions/upload-artifact/dist/upload/index.js

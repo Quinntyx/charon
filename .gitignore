@@ -6,3 +6,10 @@ local.properties
 *.jks
 *.keystore
 .pi/runtime/
+.gradle-ci/
+.kotlin/
+.sdk/
+app/build.gradle.kts.localbak
+build-local.exit
+build-local.log
+build-local.sh
